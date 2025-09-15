@@ -24,7 +24,7 @@ RESULTS_DIR="$PROJECT_DIR/results"
 REF_DIR="$PROJECT_DIR/ichorCNA_references"
 
 # Reference files (place your files in the $REF_DIR)
-REFERENCE_GENOME="$REF_DIR/hg38.fa.gz" # make sure this folder contain all the indexed files of reference genome by BWA-mem
+REFERENCE_GENOME="$REF_DIR/hg38.fa" # downloaded reference genome fasta file for indexing
 #Reference files for ichorCNA
 GC_WIG="$REF_DIR/gc_hg38_1000kb.wig"
 MAP_WIG="$REF_DIR/map_hg38_1000kb.wig"
@@ -50,7 +50,7 @@ mkdir -p "$REF_DIR"
 ```
 Move all your raw fastq files for all your samples into the `raw_data` directory. For example, KT3_S29_R1_001.fastq.gz and KT3_S29_R2_001.fastq.gz (forward and reverese fastq files) of a sample respectively. 
 ## Quality Control on Raw FASTQ files
-Before we start the analysis it is important to assess the quality of our raw fastq files(forward and reverse end) for each sample before trimming. We use FASTQC tool to generate quality reports. 
+Before we start the analysis it is important to assess the quality of our raw fastq files (forward and reverse end) for each sample before trimming. We use FASTQC tool to generate quality reports. 
 ```bash
 # Navigate to the raw_data directory
 cd $RAW_DATA_DIR
@@ -76,14 +76,14 @@ for R1_FILE in *_R1_001.fastq.gz; do
     
     fastp -i ${R1_FILE} -I ${R2_FILE} \
           -o $TRIMMED_DATA_DIR/${BASE_NAME}_R1_trimmed.fastq.gz \
-          -O $TRIMMED_DATA_DIR/${BASE_NAME}_R2_trimmed.fastq.gz \
+          -O $TRIMMED_DATA_DIR/${BASE_NAME}_R2_trimmed.fastq.gz 
 done
 ```
 Here `-i` and `-I` demonstrate the input files for Read 1 and Read 2, respectively. And `-o` and `-O`options show the output files for Read 1 and Read 2 after trimming.
 ## Quality Control after trimming with FastQC + MultiQC
 Once the fastq files have been trimmed, its important to run FastQC again to see the trimming has improved the overall quality of the reads and adaptor sequences have been removed. `multiqc` combines all the FastQC html reports into a single user friendly html report to scan the overall quality of all the files.
 ```bash
-# Navigate to the'trimmed_data directory
+# Navigate to the trimmed_data directory
 cd $TRIMMED_DATA_DIR
 
 # Run FastQC on all trimmed gzipped FASTQ files
@@ -94,10 +94,16 @@ fastqc *.fastq.gz -o $QC_DIR/trimmed/
 echo "Generating MultiQC report..."
 multiqc $QC_DIR/raw/ $QC_DIR/trimmed/ -o $QC_DIR/multiqc_report
 ```
-Here `$QC_DIR/raw/` and `$QC_DIR/trimmed/` are the input directories containing fastqc reports to be summarized, and `-o $QC_DIR/multiqc_report` mentioned to download the output directory for the MultiQC report.
-## Alignment with BWA
-This step aligns the trimmed fastq files with the reference genome (hg38) using `bwa-mem` aligner. `bwa mem` is a fast and accurate alignment algorithm for longer reads (>70bp).The reference genome must be indexed before alignment. If you have not indexed your reference genome you can do this by `bwa index $REFERENCE_GENOME`. Before indexing, download the hg38 reference genome fasta file to REFERENCE_GENOME folder.
+Here `$QC_DIR/raw/` and `$QC_DIR/trimmed/` are the input directories containing fastqc reports to be summarized, and `-o $QC_DIR/multiqc_report` mentioned to specify the output directory for the MultiQC report.
+## Alignment with BWA-MEM
+This step aligns the trimmed fastq files with the reference genome (hg38) using `bwa-mem` aligner. `bwa-mem` is a fast and accurate alignment algorithm for longer reads (>70bp). The reference genome must be indexed first before alignment. To index your reference genome, place the downloaded hg38 reference genome fasta file to $REFERENCE_GENOME folder. BWA-MEM will index this reference genome and produces multiple files (.amb, .ann, .bwt, .pac, .sa) which should be in the reference genome folder for alignment step.
 ```bash
+# Navigate to the reference genome directory
+cd "$(dirname "$REFERENCE_GENOME")"
+
+# Index the reference genome with bwa-mem
+bwa index "$(basename "$REFERENCE_GENOME")"
+
 # Navigate to the alignment directory
 cd $ALIGNMENT_DIR/raw_bams
 
@@ -108,13 +114,13 @@ for R1_FILE in $TRIMMED_DATA_DIR/*_R1_trimmed.fastq.gz; do
     BASE_NAME=$(basename ${R1_FILE} _R1_trimmed.fastq.gz)
     
     # Run bwa mem, pipe output to samtools view for conversion to BAM file
-    bwa mem -t 12 -M $REFERENCE_GENOME $R1_FILE $R2_FILE | \
+    bwa mem -t 8 -M $REFERENCE_GENOME $R1_FILE $R2_FILE | \
     samtools view -b -o ${BASE_NAME}.bam -
 
     echo "Alignment complete for sample ${BASE_NAME}."
 done
 ```
-Since i use my personal computer with 16 GB RAM so i use thread option `-t 12` which refers to number of threads use to speed up the process.
+Since i use my personal computer with 16 GB RAM so i use thread option `-t 8` which refers to number of threads use to speed up the process.
 `-M` marks shorter split hits as secondary alignments, which is recommended by bwa-mem (for Picard and GATK compatibility). `|` is the pipe symbol which redirects the standard output (`stdout`) of `bwa-mem` to the standard input (`stdin`) of `samtools view`. This pipe operator avoids creating a large intermediate SAM file. `samtools view -b`converts the SAM format output from bwa-mem into the compressed BAM format.`-o ${BASE_NAME}.bam` specifies the output BAM file name.`-` tells `samtools view` to read from stdin.
 ## Sorting and indexing BAM files
 After alignment, the BAM files are sorted and indexed to be useful for downstream analysis. Sorting improves access and downstream compatibility and indexing is important for read retrieval by region. 
@@ -135,7 +141,7 @@ for BAM_FILE in *.bam; do
     echo "Processing complete for BAM ${BAM_FILE}."
 done
 ```
-`samtools sort` sorts the BAM file by genomic coordinates. `-@ 16` uses 16 threads for sorting, which speeds up the process. `-o`specifies the output file name for the sorted BAM.`samtools index` creates an index BAM file(`.bai`) extension, which allows for quick retrieval of alignments in specific genomic regions. 
+`samtools sort` sorts the BAM file by genomic coordinates. `-@ 8` uses 8 threads for sorting, which speeds up the process. `-o`specifies the output file name for the sorted BAM.`samtools index` creates an index BAM file(`.bai`) extension, which allows for quick retrieval of alignments in specific genomic regions. 
 
 At this step you can also View the mapping results to explore the alignment summary (e.g., total reads, mapped reads, properly paired reads, un paired reads, singleton, duplicates) using `samtools flagstat` command on sorted BAM files.
 ## Filter Properly Paired, Mapped Reads
@@ -147,12 +153,12 @@ cd $ALIGNMENT_DIR/sorted_bams
 echo "Filtering reads with sambamba view..."
 for f in *_sorted.bam; do
     base=$(basename "$f" _sorted.bam)
-    sambamba view -t 16 -f bam -F "proper_pair and not (unmapped or secondary_alignment)" -o "$ALIGNMENT_DIR/filtered_bams/${base}_filtered.bam" "$f"
+    sambamba view -t 8 -f bam -F "proper_pair and not (unmapped or secondary_alignment)" -o "$ALIGNMENT_DIR/filtered_bams/${base}_filtered.bam" "$f"
 done
 ```
 `-f bam` specifies BAM output format. `-F "proper_pair and not (unmapped or secondary_alignment)"` is the filter expression. `proper_pair` keeps only paired-end reads that aligned correctly, with the expected orientation and insert size.`not (unmapped or secondary_alignment)` excludes reads that are either unmapped or represent secondary alignments, ensuring we only use the best possible alignment for each read.
 ## Remove PCR Duplicates
-We use `sambamba markdup` to identify and remove PCR duplicates. PCR duplicates are reads that start at the same genomic location and are likely artifacts of the sequencing process rather than true biological signal. Dupliates can bias copy number estimation, also suggested by ichorCNA documentation to remove PCR duplicates.
+We use `sambamba markdup` to identify and remove PCR duplicates. PCR duplicates are reads that start at the same genomic location and are likely artifacts of the sequencing process rather than true biological signal. Dupliates can bias copy number estimation, and also suggested by ichorCNA documentation to remove PCR duplicates.
 ```bash
 # Navigate to the filtered BAMs directory
 cd $ALIGNMENT_DIR/filtered_bams
@@ -160,19 +166,19 @@ cd $ALIGNMENT_DIR/filtered_bams
 echo "Removing duplicates with sambamba markdup..."
 for f in *_filtered.bam; do
     base=$(basename "$f" _filtered.bam)
-    sambamba markdup -t 16 -r "$f" "$ALIGNMENT_DIR/duplicate_removed_bams/${base}_duprem.bam"
+    sambamba markdup -t 8 -r "$f" "$ALIGNMENT_DIR/duplicate_removed_bams/${base}_duprem.bam"
 done
 ```
-`-r` removes duplicate reads instead of just marking them. This is often preferred for CNV analysis and suggested in ichorCHA guidelines. `"$f"` is the input BAM file and `"$ALIGNMENT_DIR/duplicate_removed_bams/${base}_duprem.bam"` demonstrate the output BAM file with duplicates removed.
+`-r` removes duplicate reads instead of just marking them. This is often preferred for CNV analysis and suggested in ichorCNA guidelines. `"$f"` is the input BAM file and `"$ALIGNMENT_DIR/duplicate_removed_bams/${base}_duprem.bam"` demonstrate the output BAM file with duplicates removed.
 # ichorCNA workflow
 Now we will run the ichorCNA workflow which will use duplicate removed BAM files in the previous step to call CNV variants. 
-For the ichorCNA steps, you will need the following files:
+For the ichorCNA steps, you will need the following:
 * HMMcopy_utils: This package contains the `readCounter` utility, which is required for preparing the WIG files for `ichorCNA`. WIG files are read count files generated from duplicate_removed_bam file as input.
 * ichorCNA scripts: Download the core scripts from the ichorCNA github repository [scripts](https://github.com/broadinstitute/ichorCNA/tree/master/scripts/) including `runIchorCNA.R` and `createPanelOfNormals.R`, are needed.
 * Reference files: You will also need a GC content WIG file, a mappability WIG file, a centromere file, and a panel of normals (PoN) file. These files should correspond to your reference genome (e.g., hg38) and the window size (1Mb or 500 kb) you plan to use. You can download all these files from ichorCNA github repository [extdata](https://github.com/broadinstitute/ichorCNA/tree/master/inst/extdata/).
-* Duplicate-removed BAM files: The input for this section of the pipeline is the final, duplicate-removed BAM file generated in the previous steps.
+* Duplicate-removed BAM files: Duplicate-removed BAM file generated in the previous steps will be used as input for this step.
 
-Note: ichorCNA also provide its own PON created from normal samples for 1 Mb (e.g HD_ULP_PoN_hg38_1Mb_median_normAutosome_median.rds) and 500 kb and also give a script to create your own PON from normal samples. You can use this default PON and can also explore PON from your samples.
+Note: ichorCNA also provide its own PON created from normal samples for 1 Mb (e.g HD_ULP_PoN_hg38_1Mb_median_normAutosome_median.rds) and 500 kb and also give a script to create your own PON from normal samples. You can use this default PON and can also create PON from your normal samples.
 ## Count reads in fixed windows
 The first step before running ichorCNA pipeline is creating WIG files which will be used as an input in the ichorCNA. This step involves counting the reads within fixed-size genomic windows or bin size across the reference genome. This is done using the `readCounter` function from the `HMMcopy_utils` package that generate WIG file. You can select the bin size either 1 Mb or 500 kb based on your requirements. A kep point to mention is that for making WIG files you will need input BAM file (i-e duplicate_removed BAM file in previous step), along with its indexed BAM file in the same folder for `readCounter` function. A handy thing is that even if you don't have an index file in duplicate_removed BAM folder, `readCounter` by default first generate an index file. This index file will be updated (as you have done filtering and duplication on your sorted BAM files so the index file used in this step should be made after these steps). You can either make an index file after removing duplicate step or use the index file generated in `readCounter` step. 
 ```bash
@@ -182,7 +188,7 @@ cd "$HMMCOPY_BIN"
 # Loop through all duplicate-removed BAM files to create WIG files
 echo "Counting reads in fixed windows..."
 for BAM_FILE in "$ALIGNMENT_DIR/duplicate_removed_bams"/*_duprem.bam; do
-    BASE_NAME=$(basename "${BAM_FILE}"_duprem.bam)
+    BASE_NAME=$(basename "${BAM_FILE}" _duprem.bam)
     ./readCounter --window 1000000 --quality 20 \
         --chromosome "chr1,chr2,chr3,chr4,chr5,chr6,chr7,chr8,chr9,chr10,chr11,chr12,chr13,chr14,chr15,chr16,chr17,chr18,chr19,chr20,chr21,chr22,chrX,chrY" \
         "$BAM_FILE" \
@@ -191,12 +197,12 @@ done
 ```
 `--window 1000000` is window size of 1,000,000 base pairs (1Mb), commonly used filter for low-pass WGS, ichorCNA also suggested to use 1Mb size initially. `--quality 20` filters a minimum mapping quality score of 20. Reads with a score below this will be ignored, helping to remove poor-quality alignments. `--chromosome` lists the chromosomes to be included in the analysis. This ensures consistency and avoids any issues with different chromosome notations, "chr1" notation is used to align with hg38 notation. `>` redirects the standard output of `readCounter` to a new `.wig` file.
 ## Run ichorCNA for CNV analysis
-This is the core ichorCNA analysis step. ichorCNA uses the WIG files, along with reference files and a panel of normals, to estimate tumor fraction, ploidy, and copy number alteration plots. This set of parameters is a good starting point if you expect a moderate to high tumor fraction (e.g., > 50%). It explores a range of normal contamination values from 0.5 to 0.9 in `--normal` filter below. You can optimize this filter if there is very low tumor fraction for example `--normal "c(0.95, 0.99, 0.995, 0.999)`. You can find further details regarding fine tuning for very low tumor fraction in the ichorCNA vignette. This scrip iterate through the generated WIG files, runs the `runIchorCNA.R` script file (R file downloaded from ichorCNA github repository), and the file paths required for reference files including GC content file (gc_hg38_1000kb.wig), mappability file (map_hg38_1000kb.wig),centromeres (GRCh38.GCA_000001405.2_centromere_acen.txt), and a PON (HD_ULP_PoN_hg38_1Mb_median_normAutosome_median.rds) from [ichorCNA github repository](https://github.com/broadinstitute/ichorCNA/tree/master/inst/extdata/) for 1Mb window size for hg38 assembly. Results for each sample are saved in a dedicated output directory containing genome-wide plots for CNVs and other files (details for each result file is explained in the ichorCNA's vignette.
+This is the core ichorCNA analysis step. ichorCNA uses the WIG files, along with reference files and a panel of normals, to estimate tumor fraction, ploidy, and generate copy number alteration plots. This set of parameters is a good starting point if you expect a moderate to high tumor fraction (e.g., > 50%). It explores a range of normal contamination values from 0.5 to 0.9 in `--normal` filter below. You can optimize this filter if there is very low tumor fraction for example `--normal "c(0.95, 0.99, 0.995, 0.999)`. You can find further details regarding fine tuning for very low tumor fraction in the ichorCNA vignette. This scrip iterate through the generated WIG files, runs the `runIchorCNA.R` script file (R file downloaded from ichorCNA github repository), and the file paths required for reference files including GC content file (gc_hg38_1000kb.wig), mappability file (map_hg38_1000kb.wig),centromeres (GRCh38.GCA_000001405.2_centromere_acen.txt), and a PON (HD_ULP_PoN_hg38_1Mb_median_normAutosome_median.rds) from [ichorCNA github repository](https://github.com/broadinstitute/ichorCNA/tree/master/inst/extdata/) for 1Mb window size for hg38 assembly. Results for each sample are saved in a dedicated output directory containing genome-wide plots for CNVs and other files (details for each result file is explained in the ichorCNA's vignette.
 ```bash
 # Navigate to the ichorCNA scripts directory
 cd "$ICHORCNA_SCRIPTS"
 
-echo "Running ichorCNA with lenient parameters..."
+echo "Running ichorCNA..."
 for WIG_FILE in "$WIG_DIR"/*.wig; do
     BASE_NAME=$(basename "$WIG_FILE" .wig)
     Rscript runIchorCNA.R \
